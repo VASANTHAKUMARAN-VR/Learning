@@ -1,0 +1,314 @@
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+
+/**
+ * @property CI_Input $input
+ * @property CI_Output $output
+ * @property CI_DB_mysqli_driver $db
+ */
+class Visitor_api extends CI_Controller
+{
+    public function __construct()
+    {
+        parent::__construct();
+        $this->load->database();
+        $this->set_cors_headers();
+    }
+
+    public function lookup()
+    {
+        if ($this->input->method(TRUE) === 'OPTIONS') {
+            return $this->output->set_status_header(204);
+        }
+
+        if ($this->input->method(TRUE) !== 'POST') {
+            return $this->respond(405, array('status' => false, 'message' => 'POST is required.'));
+        }
+
+        $request = json_decode(file_get_contents('php://input'), TRUE);
+        $token = is_array($request) && isset($request['token']) ? strtolower(trim($request['token'])) : '';
+        if (!preg_match('/\A[a-f0-9]{64}\z/', $token)) {
+            return $this->respond(404, array('status' => false, 'message' => 'Pass not found.'));
+        }
+
+        $row = $this->db
+            ->where('pass_token_hash', hash('sha256', $token))
+            ->get('visitor_records')
+            ->row_array();
+        if (!$row) {
+            return $this->respond(404, array('status' => false, 'message' => 'Pass not found.'));
+        }
+
+        $photo_data = isset($row['photo_data']) ? $row['photo_data'] : '';
+        $photo_mime = isset($row['photo_mime']) ? $row['photo_mime'] : '';
+        $photo = $photo_data !== ''
+            ? 'data:' . $photo_mime . ';base64,' . base64_encode($photo_data)
+            : NULL;
+        $employee = $row['employee_name'] || $row['employee_id'] || $row['employee_email']
+            ? array(
+                'id' => $row['employee_id'],
+                'name' => $row['employee_name'],
+                'email' => $row['employee_email'],
+                'department' => '',
+                'mobile' => '',
+                'photo' => '',
+            )
+            : NULL;
+
+        return $this->respond(200, array(
+            'status' => true,
+            'visitorId' => (string) $row['id'],
+            'badgeId' => $row['badge_id'],
+            'registeredAt' => $row['created_at'],
+            'visitor' => array(
+                'employee' => $employee,
+                'mobile' => $row['mobile'],
+                'name' => $row['name'],
+                'company' => $row['company'],
+                'email' => $row['email'],
+                'purpose' => $row['purpose'],
+                'visitorType' => $row['visitor_type'],
+                'visitType' => $row['visit_type'],
+                'duration' => $row['duration'],
+                'idProof' => $row['id_proof'],
+                'idNumber' => $this->mask_id_number($row['id_number']),
+                'badgeId' => $row['badge_id'],
+                'validFrom' => $row['valid_from'],
+                'validTo' => $row['valid_to'],
+                'visitDate' => '',
+                'arrivalTime' => '',
+                'photo' => $photo,
+                'laptopDetails' => $row['laptop_details'],
+                'mobileDetails' => $row['mobile_details'],
+                'otherDetails' => $row['other_details'],
+            ),
+        ));
+    }
+
+    public function employee_lookup()
+    {
+        if ($this->input->method(TRUE) === 'OPTIONS') {
+            return $this->output->set_status_header(204);
+        }
+
+        if ($this->input->method(TRUE) !== 'POST') {
+            return $this->respond(405, array('status' => false, 'message' => 'POST is required.'));
+        }
+
+        $request = json_decode(file_get_contents('php://input'), TRUE);
+        $email = is_array($request) && isset($request['email']) ? strtolower(trim($request['email'])) : '';
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            return $this->respond(400, array('status' => false, 'message' => 'A valid employee email is required.'));
+        }
+
+        $row = $this->db
+            ->select('employee_id, employee_name, employee_email')
+            ->where('employee_email', $email)
+            ->order_by('id', 'DESC')
+            ->get('visitor_records')
+            ->row_array();
+        if (!$row) {
+            return $this->respond(404, array('status' => false, 'message' => 'No employee found with this email.'));
+        }
+
+        return $this->respond(200, array(
+            'status' => true,
+            'employee' => array(
+                'id' => $row['employee_id'],
+                'name' => $row['employee_name'],
+                'email' => $row['employee_email'],
+                'department' => '',
+                'mobile' => '',
+                'photo' => '',
+            ),
+        ));
+    }
+
+    public function visitor_lookup()
+    {
+        if ($this->input->method(TRUE) === 'OPTIONS') {
+            return $this->output->set_status_header(204);
+        }
+
+        if ($this->input->method(TRUE) !== 'POST') {
+            return $this->respond(405, array('status' => false, 'message' => 'POST is required.'));
+        }
+
+        $request = json_decode(file_get_contents('php://input'), TRUE);
+        $mobile = is_array($request) && isset($request['mobile'])
+            ? preg_replace('/\D+/', '', $request['mobile'])
+            : '';
+        if (strlen($mobile) !== 10) {
+            return $this->respond(400, array('status' => false, 'message' => 'A valid 10-digit mobile number is required.'));
+        }
+
+        $row = $this->db
+            ->where('mobile', $mobile)
+            ->order_by('id', 'DESC')
+            ->get('visitor_records')
+            ->row_array();
+        if (!$row) {
+            return $this->respond(404, array('status' => false, 'message' => 'No visitor found with this mobile number.'));
+        }
+
+        $photo_data = isset($row['photo_data']) ? $row['photo_data'] : '';
+        $photo_mime = isset($row['photo_mime']) ? $row['photo_mime'] : '';
+        $photo = $photo_data !== ''
+            ? 'data:' . $photo_mime . ';base64,' . base64_encode($photo_data)
+            : NULL;
+
+        return $this->respond(200, array(
+            'status' => true,
+            'visitor' => array(
+                'mobile' => $row['mobile'],
+                'name' => $row['name'],
+                'company' => $row['company'],
+                'email' => $row['email'],
+                'purpose' => $row['purpose'],
+                'visitorType' => $row['visitor_type'],
+                'visitType' => $row['visit_type'],
+                'duration' => $row['duration'],
+                'idProof' => $row['id_proof'],
+                'idNumber' => $row['id_number'],
+                'laptopDetails' => $row['laptop_details'],
+                'mobileDetails' => $row['mobile_details'],
+                'otherDetails' => $row['other_details'],
+                'photo' => $photo,
+            ),
+        ));
+    }
+
+    public function create()
+    {
+        if ($this->input->method(TRUE) === 'OPTIONS') {
+            return $this->output->set_status_header(204);
+        }
+
+        if ($this->input->method(TRUE) !== 'POST') {
+            return $this->respond(405, array('status' => false, 'message' => 'POST is required.'));
+        }
+
+        $payload_json = $this->input->post('payload');
+        if ($payload_json === NULL) {
+            $payload_json = file_get_contents('php://input');
+        }
+        $payload = json_decode($payload_json, TRUE);
+        if (!is_array($payload)) {
+            return $this->respond(400, array('status' => false, 'message' => 'A valid visitor payload is required.'));
+        }
+
+        $name = trim(isset($payload['name']) ? $payload['name'] : '');
+        $mobile = trim(isset($payload['mobile']) ? $payload['mobile'] : '');
+        if ($name === '' || $mobile === '') {
+            return $this->respond(400, array('status' => false, 'message' => 'Visitor name and mobile are required.'));
+        }
+
+        $photo_data = NULL;
+        $photo_mime = NULL;
+        if (isset($_FILES['photo']) && $_FILES['photo']['error'] !== UPLOAD_ERR_NO_FILE) {
+            $upload = $_FILES['photo'];
+            if ($upload['error'] !== UPLOAD_ERR_OK || $upload['size'] > 5242880) {
+                return $this->respond(400, array('status' => false, 'message' => 'Photo upload failed or exceeds the 5 MB limit.'));
+            }
+
+            $image_info = getimagesize($upload['tmp_name']);
+            $allowed_mimes = array('image/jpeg', 'image/png', 'image/webp');
+            if ($image_info === FALSE || !in_array($image_info['mime'], $allowed_mimes, TRUE)) {
+                return $this->respond(400, array('status' => false, 'message' => 'Photo must be a JPEG, PNG, or WebP image.'));
+            }
+
+            $photo_data = file_get_contents($upload['tmp_name']);
+            if ($photo_data === FALSE) {
+                return $this->respond(400, array('status' => false, 'message' => 'Unable to read the uploaded photo.'));
+            }
+            $photo_mime = $image_info['mime'];
+        }
+
+        $employee = isset($payload['employee']) && is_array($payload['employee']) ? $payload['employee'] : array();
+        $record = array(
+            'employee_id' => $this->field($employee, 'id'),
+            'employee_name' => $this->field($employee, 'name'),
+            'employee_email' => $this->field($employee, 'email'),
+            'mobile' => $mobile,
+            'name' => $name,
+            'company' => $this->field($payload, 'company'),
+            'email' => $this->field($payload, 'email'),
+            'purpose' => $this->field($payload, 'purpose'),
+            'visitor_type' => $this->field($payload, 'visitorType'),
+            'valid_from' => $this->date_field($payload, 'validFrom'),
+            'valid_to' => $this->date_field($payload, 'validTo'),
+            'duration' => $this->field($payload, 'duration'),
+            'visit_type' => $this->field($payload, 'visitType'),
+            'id_proof' => $this->field($payload, 'idProof'),
+            'id_number' => $this->field($payload, 'idNumber'),
+            'laptop_details' => $this->field($payload, 'laptopDetails'),
+            'mobile_details' => $this->field($payload, 'mobileDetails'),
+            'other_details' => $this->field($payload, 'otherDetails'),
+            'badge_id' => strtoupper(trim($this->field($payload, 'badgeId'))),
+            'photo_data' => $photo_data,
+            'photo_mime' => $photo_mime,
+        );
+        $pass_token = bin2hex(random_bytes(32)); 
+        $record['pass_token_hash'] = hash('sha256', $pass_token);
+
+        if (!$this->db->insert('visitor_records', $record)) {
+            return $this->respond(500, array('status' => false, 'message' => 'Visitor registration could not be saved.'));
+        }
+
+        /** @var CI_DB_mysqli_driver $database */
+        $database = $this->db;
+        return $this->respond(201, array(
+            'status' => true,
+            'visitorId' => (string) $database->insert_id(),
+            'badgeId' => $record['badge_id'],
+            'passToken' => $pass_token,
+            'message' => 'Visitor registered successfully.',
+        ));
+    }
+
+    private function field($source, $key)
+    {
+        return isset($source[$key]) ? trim((string) $source[$key]) : '';
+    }
+
+    private function date_field($source, $key)
+    {
+        $value = $this->field($source, $key);
+        return $value === '' ? NULL : $value;
+    }
+
+    private function mask_id_number($id_number)
+    {
+        $id_number = (string) $id_number;
+        if ($id_number === '') {
+            return '';
+        }
+
+        $visible_digits = substr($id_number, -4);
+        return str_repeat('X', max(0, strlen($id_number) - 4)) . $visible_digits;
+    }
+
+    private function set_cors_headers()
+    {
+        $origin = isset($_SERVER['HTTP_ORIGIN']) ? $_SERVER['HTTP_ORIGIN'] : '';
+        $allowed_origins = array(
+            'http://localhost:885', 'http://127.0.0.1:885',
+            'http://172.16.1.243:885',
+        );
+        if (in_array($origin, $allowed_origins, TRUE)) {
+            $this->output->set_header('Access-Control-Allow-Origin: ' . $origin);
+            $this->output->set_header('Vary: Origin');
+        }
+        $this->output->set_header('Access-Control-Allow-Methods: POST, OPTIONS');
+        $this->output->set_header('Access-Control-Allow-Headers: Content-Type');
+    }
+
+    private function respond($status, $body)
+    {
+        return $this->output
+            ->set_status_header($status)
+            ->set_content_type('application/json')
+            ->set_header('Cache-Control: no-store, private')
+            ->set_output(json_encode($body));
+    }
+}
